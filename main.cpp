@@ -11,6 +11,9 @@ const vec3       eye(1,1,3); // camera position
 const vec3    center(0,0,0); // camera direction
 const vec3        up(0,1,0); // camera up vector
 
+const TGAColor WHITE = TGAColor(255, 255, 255, 255);
+const TGAColor RED = TGAColor(255, 0, 0, 255);
+
 extern mat<4,4> ModelView; // "OpenGL" state matrices
 extern mat<4,4> Projection;
 
@@ -71,16 +74,33 @@ int main(int argc, char** argv) {
     projection(-1.f/(eye-center).norm());               // build the Projection matrix
 
     for (int m=1; m<argc; m++) { // iterate through all input objects
-        Model model(argv[m]);
-        Shader shader(model);
-        for (int i=0; i<model.nfaces(); i++) { // for every triangle
-            vec4 clip_vert[3]; // triangle coordinates (clip coordinates), written by VS, read by FS
-            for (int j=0; j<3; j++)
-                clip_vert[j] = shader.vertex(i, j); // call the vertex shader for each triangle vertex
-            triangle(clip_vert, shader, framebuffer, zbuffer); // actual rasterization routine call
+        bool wireFrame = true;
+        if(wireFrame) {
+            Model model(argv[m]);
+            for (int i = 0; i < model.nfaces(); i++) {
+                for (int j = 0; j < 3; j++) {
+                    vec3 v0 = model.vert(i, j);
+                    vec3 v1 = model.vert(i, (j + 1) % 3);
+                    int x0 = (v0.x + 1.) * width / 2.;
+                    int y0 = (v0.y + 1.) * height / 2.;
+                    int x1 = (v1.x + 1.) * width / 2.;
+                    int y1 = (v1.y + 1.) * height / 2.;
+                    line(x0, y0, x1, y1, framebuffer, WHITE);
+                }
+            }
+        } else {
+            Model model(argv[m]);
+            Shader shader(model);
+            for (int i=0; i<model.nfaces(); i++) { // for every triangle
+                vec4 clip_vert[3]; // triangle coordinates (clip coordinates), written by VS, read by FS
+                for (int j=0; j<3; j++)
+                    clip_vert[j] = shader.vertex(i, j); // call the vertex shader for each triangle vertex
+                triangle(clip_vert, shader, framebuffer, zbuffer); // actual rasterization routine call
+            }
         }
     }
     framebuffer.write_tga_file("framebuffer.tga"); // the vertical flip is moved inside the function
+    std::cout << "Output to framebuffer.tag" << std::endl;
     return 0;
 }
 
