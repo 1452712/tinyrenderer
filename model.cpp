@@ -12,6 +12,7 @@ Model::Model(const std::string filename) : verts_(), uv_(), norms_(), facet_vrt_
         std::getline(in, line);
         std::istringstream iss(line.c_str());
         char trash;
+        // "vt u v" texture coordinates
         if (!line.compare(0, 2, "v ")) {
             iss >> trash;
             vec3 v;
@@ -27,6 +28,7 @@ Model::Model(const std::string filename) : verts_(), uv_(), norms_(), facet_vrt_
             vec2 uv;
             for (int i=0;i<2;i++) iss >> uv[i];
             uv_.push_back(uv);
+        // facet line "f x/x/x x/x/x x/x/x", vertex
         }  else if (!line.compare(0, 2, "f ")) {
             int f,t,n;
             iss >> trash;

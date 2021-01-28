@@ -98,6 +98,10 @@ template<> struct vec<3> {
 
 /////////////////////////////////////////////////////////////////////////////////
 
+// Homogeneous coordinates:
+// [x, y, z], z = 0 are vectors; 
+// back to 2D [x/z, y/z]
+
 template<int n> struct dt;
 
 template<int nrows,int ncols> struct mat {

@@ -1,5 +1,8 @@
 #include <limits>
 #include <iostream>
+#include <chrono>
+#include <string>
+#include <algorithm>
 #include "model.h"
 #include "our_gl.h"
 
@@ -16,6 +19,37 @@ const TGAColor RED = TGAColor(255, 0, 0, 255);
 
 extern mat<4,4> ModelView; // "OpenGL" state matrices
 extern mat<4,4> Projection;
+extern mat<4,4> Viewport;
+
+struct GouraudShader : public IShader {
+    const Model &model;
+    vec3 normalize_light;
+    vec3 varing_intensity; // written by vertex shader, read by fragment shader
+
+    GouraudShader(const Model &m) : model(m) { 
+        normalize_light = light_dir;
+        normalize_light.normalize();
+    }
+
+    virtual vec4 vertex(int iface, int nthvert) {
+        // get diffuse lighting intensity
+        varing_intensity[nthvert] =
+            std::max(0.0, model.normal(iface, nthvert) * normalize_light);
+        // read the vertex from .obj file
+        vec4 gl_Vertex = embed<4>(model.vert(iface, nthvert));
+        // transform it to screen coordinates
+        return Viewport * Projection * ModelView * gl_Vertex;
+    }
+
+    virtual bool fragment(const vec3 bar, TGAColor& color) {
+        // interpolate intensity for the current pixel
+        float intensity = varing_intensity * bar;
+        // well duh
+        color = TGAColor(255, 255, 255) * intensity;
+        // do not discard this pixel
+        return false;
+    }
+};
 
 struct Shader : IShader {
     const Model &model;
@@ -61,7 +95,14 @@ struct Shader : IShader {
     }
 };
 
-int main(int argc, char** argv) {
+enum RenderType {
+    Wireframe = 0,
+    Gouraud = 1,
+    Textured = 2
+};
+
+int main(int argc, char** argv)
+{
     if (2>argc) {
         std::cerr << "Usage: " << argv[0] << " obj/model.obj" << std::endl;
         return 1;
@@ -74,8 +115,10 @@ int main(int argc, char** argv) {
     projection(-1.f/(eye-center).norm());               // build the Projection matrix
 
     for (int m=1; m<argc; m++) { // iterate through all input objects
-        bool wireFrame = true;
-        if(wireFrame) {
+        RenderType type = Gouraud;
+        switch(type) {
+        case Wireframe:
+        {
             Model model(argv[m]);
             for (int i = 0; i < model.nfaces(); i++) {
                 for (int j = 0; j < 3; j++) {
@@ -88,19 +131,44 @@ int main(int argc, char** argv) {
                     line(x0, y0, x1, y1, framebuffer, WHITE);
                 }
             }
-        } else {
+            break;
+        }
+        case Gouraud:
+        {
+            Model model(argv[m]);
+            GouraudShader shader(model);
+            for (int i = 0; i < model.nfaces(); i++) {
+                vec4 clip_vert[3];
+                for (int j = 0; j < 3; j++)
+                    clip_vert[j] = shader.vertex(i, j);
+                triangle(clip_vert, shader, framebuffer, zbuffer);
+            }
+            break;
+        }
+        case Textured:
+        default:
+        {
             Model model(argv[m]);
             Shader shader(model);
-            for (int i=0; i<model.nfaces(); i++) { // for every triangle
-                vec4 clip_vert[3]; // triangle coordinates (clip coordinates), written by VS, read by FS
-                for (int j=0; j<3; j++)
-                    clip_vert[j] = shader.vertex(i, j); // call the vertex shader for each triangle vertex
-                triangle(clip_vert, shader, framebuffer, zbuffer); // actual rasterization routine call
+            for (int i = 0; i < model.nfaces(); i++) {                      // for every triangle
+                vec4 clip_vert[3]; // triangle coordinates (clip coordinates),
+                                   // written by VS, read by FS
+                for (int j = 0; j < 3; j++)
+                    clip_vert[j] = shader.vertex(
+                        i,
+                        j); // call the vertex shader for each triangle vertex
+                triangle(clip_vert, shader, framebuffer,
+                         zbuffer); // actual rasterization routine call
             }
+            break;
         }
+        }
+        // the vertical flip is moved inside the function
+        std::string result_name = argv[m];
+        size_t lastindex = result_name.find_last_of(".");
+        result_name = result_name.substr(0, lastindex) + "_framebuffer.tga";
+        framebuffer.write_tga_file(result_name.c_str());
+        std::cout << "Output to " << result_name << std::endl;
     }
-    framebuffer.write_tga_file("framebuffer.tga"); // the vertical flip is moved inside the function
-    std::cout << "Output to framebuffer.tag" << std::endl;
     return 0;
 }
-
