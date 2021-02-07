@@ -17,7 +17,30 @@ const vec3        up(0,1,0); // camera up vector
 const TGAColor WHITE = TGAColor(255, 255, 255, 255);
 const TGAColor RED = TGAColor(255, 0, 0, 255);
 
+// Model -> World: W = Scale x Rotation x T
+//     --             --
+//     | Ux, Uy, Uz, 0 |
+// T = | Vx, Vy, Vz, 0 |
+//     | Wx, Wy, Wz, 0 |
+//     | Ox, Oy, Oz, 1 |
+//     --             --
+// World -> Camera: V = Wc^(-1) = Tc^(-1) x Rc^(T)
+//     --                        --
+//     |    UCx,    UCy,   UCz, 0 |
+// V = |    VCx,    VCy,   VCz, 0 |
+//     |    WCx,    WCy,   WCz, 0 |
+//     | -OC*UC, -OC*VC, OC*WC, 1 |
+//     --                        --
 extern mat<4,4> ModelView; // "OpenGL" state matrices
+// Perspective Projection: (Clipping) -> Frustum -> Window
+// -> NDC (normalized device coordinates) -> Normalize depth
+//     --                           --
+//     | 1/(r*tan(alpha/2)), 0, 0, 0 |
+// P = | 0,     1/tan(alpha/2), 0, 0 |
+//     | 0, 0,        f / (f - n), 1 |
+//     | 0, 0,  - n * f / (f - n), 1 |
+//     --                           --
+// Notice: Z(z) = f/(f-n) - n*f/((f-n)*z), linear to 1/z
 extern mat<4,4> Projection;
 extern mat<4,4> Viewport;
 
@@ -38,12 +61,12 @@ struct GouraudShader : public IShader {
         // read the vertex from .obj file
         vec4 gl_Vertex = embed<4>(model.vert(iface, nthvert));
         // transform it to screen coordinates
-        return Viewport * Projection * ModelView * gl_Vertex;
+        return Projection * ModelView * gl_Vertex;
     }
 
     virtual bool fragment(const vec3 bar, TGAColor& color) {
         // interpolate intensity for the current pixel
-        float intensity = varing_intensity * bar;
+        float intensity = (varing_intensity * bar);
         // well duh
         color = TGAColor(255, 255, 255) * intensity;
         // do not discard this pixel
@@ -51,6 +74,12 @@ struct GouraudShader : public IShader {
     }
 };
 
+// Normalmapping
+// Global (Cartesian) coordinate: interpret RGB as xyz.
+// Darboux frame (i.e. tangent space):
+//     z: normal to the object [B]
+//     x: principal curvature direction
+//     y: their cross product
 struct Shader : IShader {
     const Model &model;
     vec3 l;               // light direction in normalized device coordinates
@@ -70,6 +99,10 @@ struct Shader : IShader {
         return gl_Vertex;
     }
 
+    // Phong's approximation of lighting model:
+    //     Reflection = weight_A * Ambient (constant)
+    //         + weight_D * Diffuse (cos(normal, light)) 
+    //         + weight_S * Specular 
     virtual bool fragment(const vec3 bar, TGAColor &color) {
         vec3 bn = (varying_nrm*bar).normalize(); // per-vertex normal interpolation
         vec2 uv = varying_uv*bar; // tex coord interpolation
