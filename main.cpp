@@ -1,6 +1,7 @@
 #include <limits>
 #include <iostream>
 #include <chrono>
+#include <cstdlib>
 #include <string>
 #include <algorithm>
 #include "model.h"
@@ -56,6 +57,8 @@ struct GouraudShader : public IShader {
 
     virtual vec4 vertex(int iface, int nthvert) {
         // get diffuse lighting intensity
+        // Lambert's Cosine Law: f(θ) = max(cosθ, 0) 
+        //     = max(light_normal * surface_normal, 0)
         varing_intensity[nthvert] =
             std::max(0.0, model.normal(iface, nthvert) * normalize_light);
         // read the vertex from .obj file
@@ -77,17 +80,17 @@ struct GouraudShader : public IShader {
 // Normalmapping
 // Global (Cartesian) coordinate: interpret RGB as xyz.
 // Darboux frame (i.e. tangent space):
-//     z: normal to the object [B]
-//     x: principal curvature direction
-//     y: their cross product
-struct Shader : IShader {
+//     z: normal to the object [B], (u x v / || u x v ||)
+//     x: principal curvature direction, (xA * z(A^-1)^T = 0) (from uv: A^(-1) * (u1 - u0, u2 - u0, 0))
+//     y: their cross product (from uv: A^(-1) * (v1 - v0, v2 - v0, 0), for a triangle, A = (p1- p0, p2 - p0, n))
+struct TextureShader : IShader {
     const Model &model;
     vec3 l;               // light direction in normalized device coordinates
     mat<2,3> varying_uv;  // triangle uv coordinates, written by the vertex shader, read by the fragment shader
     mat<3,3> varying_nrm; // normal per vertex to be interpolated by FS
     mat<3,3> ndc_tri;     // triangle in normalized device coordinates
 
-    Shader(const Model &m) : model(m) {
+    TextureShader(const Model &m) : model(m) {
         l = proj<3>((Projection*ModelView*embed<4>(light_dir, 0.))).normalize(); // transform the light vector to the normalized device coordinates
     }
 
@@ -117,6 +120,7 @@ struct Shader : IShader {
         vec3 n = (B * model.normal(uv)).normalize(); // transform the normal from the texture to the tangent space
 
         double diff = std::max(0., n*l); // diffuse light intensity
+        // relection vector: r = l - 2(n * l)*n
         vec3 r = (n*(n*l)*2 - l).normalize(); // reflected light direction, specular mapping is described here: https://github.com/ssloy/tinyrenderer/wiki/Lesson-6-Shaders-for-the-software-renderer
         double spec = std::pow(std::max(r.z, 0.), 5+model.specular(uv)); // specular intensity, note that the camera lies on the z-axis (in ndc), therefore simple r.z
 
@@ -128,10 +132,124 @@ struct Shader : IShader {
     }
 };
 
+// Shadow Mapping
+struct DepthShader : public IShader {
+    const Model &model;
+    mat<3, 3> varing_tri;
+
+    DepthShader(const Model &m) : model(m) {
+    }
+    
+    virtual vec4 vertex(const int iface, const int nthvert) {
+        // read the vertex from .obj file
+        vec4 gl_Vertex = embed<4>(model.vert(iface, nthvert));
+        // transform it to screen coordinates
+        gl_Vertex = Projection * ModelView * gl_Vertex;
+        varing_tri.set_col(nthvert, proj<3>(gl_Vertex/gl_Vertex[3]));
+        return gl_Vertex;
+    }
+    
+    virtual bool fragment(const vec3 bar, TGAColor &color) {
+        vec3 p = varing_tri * bar;
+        color = TGAColor(255, 255, 255) * p.z;
+        return false;
+    }
+};
+
+struct ShadowShader : public IShader {
+    const Model &model;
+    std::vector<double> shadowbuffer;
+    mat<4,4> uniform_M;   //  Projection*ModelView
+    mat<4,4> uniform_MIT; // (Projection*ModelView).invert_transpose()
+    mat<4,4> uniform_Mshadow; // transform framebuffer screen coordinates to shadowbuffer screen coordinates
+    mat<2,3> varying_uv;  // triangle uv coordinates, written by the vertex shader, read by the fragment shader
+    mat<3,3> varying_tri; // triangle coordinates before Viewport transform, written by VS, read by FS
+
+    ShadowShader(const Model &m, const std::vector<double> shadow,
+                 const mat<4, 4> shadowM)
+        : model(m), shadowbuffer(shadow)
+    {
+        uniform_M = ModelView;
+        uniform_MIT = (Projection*ModelView).invert_transpose();
+        uniform_Mshadow = shadowM * (Viewport * Projection * ModelView).invert();
+    }
+
+    virtual vec4 vertex(const int iface, const int nthvert) {
+        varying_uv.set_col(nthvert, model.uv(iface, nthvert));
+        vec4 gl_Vertex =
+            Projection * ModelView * embed<4>(model.vert(iface, nthvert));
+        varying_tri.set_col(nthvert, proj<3>(gl_Vertex / gl_Vertex[3]));
+        return gl_Vertex;
+    }
+    
+    virtual bool fragment(const vec3 bar, TGAColor &color) {
+        // corresponding point in the shadow buffer
+        vec4 sb_p = uniform_Mshadow * embed<4>(varying_tri * bar);
+        sb_p = sb_p / sb_p[3];
+        // index in the shadowbuffer array
+        int idx = int(sb_p[0]) + int(sb_p[1]) * width;
+        float shadow =
+            0.3f + 0.7f * (shadowbuffer[idx] <
+                           sb_p[2] + 43.34); // magic coeff to avoid z-fighting
+
+        // interpolate uv for the current pixel
+        vec2 uv = varying_uv * bar;
+        vec3 normal = proj<3>(uniform_MIT * embed<4>(model.normal(uv))).normalize();
+        vec3 lit = proj<3>(uniform_M * embed<4>(light_dir)).normalize();
+        vec3 reflect = (normal * (normal * lit * 2.0f) - lit).normalize();
+        float spec = pow(std::max(reflect.z, 0.0), model.specular(uv));
+        float diff = std::max(0.0, normal * lit);
+        TGAColor c = model.diffuse(uv);
+        for (int i = 0; i < 3; ++i)
+            color = std::min<float>(20 + c[i] * shadow * (1.2 * diff + 0.6 * spec), 255);
+        return false;
+    }
+};
+
+// Screen Space Ambient Occlusion
+struct AOShader : public IShader {
+    const Model &model;
+    mat<4, 3> varing_tri;
+
+    AOShader(const Model &m) : model(m) {}
+
+    virtual vec4 vertex(const int iface, const int nthvert) {
+        // read the vertex from .obj file
+        vec4 gl_Vertex = embed<4>(model.vert(iface, nthvert));
+        // transform it to screen coordinates
+        gl_Vertex = Projection * ModelView * gl_Vertex;
+        varing_tri.set_col(nthvert, gl_Vertex);
+        return gl_Vertex;
+    }
+    
+    virtual bool fragment(const vec3 /*bar*/, TGAColor &color) {
+        color = TGAColor(0, 0, 0);
+        return false;
+    }
+
+    static float max_elevation_angle(std::vector<double> zbuffer, vec2 p, vec2 dir) {
+        float maxangle = 0;
+        for (float t = 0; t < 1000; t += 1.0f) {
+            vec2 cur = p + dir * t;
+            if (cur.x >= width || cur.y >= height || cur.x < 0 || cur.y < 0)
+                return maxangle;
+            float distance = (p - cur).norm();
+            if (distance < 1.0f)
+                continue;
+            float elevation = zbuffer[int(cur.x) + int(cur.y) * width]
+                - zbuffer[int(p.x) + int(p.y)* width];
+            maxangle = std::max(maxangle, atanf(elevation / distance));
+        }
+        return maxangle;
+    }
+};
+
 enum RenderType {
     Wireframe = 0,
     Gouraud = 1,
-    Textured = 2
+    Textured = 2,
+    Shadow = 3,
+    SSAO = 4
 };
 
 int main(int argc, char** argv)
@@ -148,7 +266,7 @@ int main(int argc, char** argv)
     projection(-1.f/(eye-center).norm());               // build the Projection matrix
 
     for (int m=1; m<argc; m++) { // iterate through all input objects
-        RenderType type = Gouraud;
+        RenderType type = Shadow;
         switch(type) {
         case Wireframe:
         {
@@ -179,10 +297,9 @@ int main(int argc, char** argv)
             break;
         }
         case Textured:
-        default:
         {
             Model model(argv[m]);
-            Shader shader(model);
+            TextureShader shader(model);
             for (int i = 0; i < model.nfaces(); i++) {                      // for every triangle
                 vec4 clip_vert[3]; // triangle coordinates (clip coordinates),
                                    // written by VS, read by FS
@@ -195,13 +312,82 @@ int main(int argc, char** argv)
             }
             break;
         }
+        case Shadow:
+        {
+            Model model(argv[m]);
+
+            // Pass1
+            TGAImage depth(width, height, TGAImage::RGB);
+            std::vector<double> shadowbuffer(
+                width * height, -std::numeric_limits<double>::max());
+            lookat(light_dir, center, up);
+            viewport(width / 8, height / 8, width * 3 / 4, height * 3 / 4);
+            projection(-1.f / (light_dir - center).norm());
+            mat<4, 4> shadowMatrix = Viewport * Projection * ModelView;
+
+            DepthShader depth_shader(model);
+            for (int i = 0; i < model.nfaces(); i++) {
+                vec4 clip_vert[3];
+                for (int j = 0; j < 3; j++)
+                    clip_vert[j] = depth_shader.vertex(i, j);
+                triangle(clip_vert, depth_shader, depth, shadowbuffer);
+            }
+
+            // output depth image
+            std::string result_name = argv[m];
+            size_t lastindex = result_name.find_last_of(".");
+            result_name = result_name.substr(0, lastindex) + "_depth.tga";
+            depth.write_tga_file(result_name.c_str());
+            std::cout << "Output Depth Image to: " << result_name << std::endl;
+
+            // Pass2
+            // Update matrix
+            lookat(eye, center, up);
+            viewport(width / 8, height / 8, width * 3 / 4, height * 3 / 4);
+            projection(-1.f / (eye - center).norm());
+            ShadowShader shadow_shader(model, shadowbuffer, shadowMatrix);
+            for (int i = 0; i < model.nfaces(); i++) {
+                vec4 clip_vert[3];
+                for (int j = 0; j < 3; j++)
+                    clip_vert[j] = shadow_shader.vertex(i, j);
+                triangle(clip_vert, shadow_shader, framebuffer, zbuffer);
+            }
+            break;
+        }
+        case SSAO:
+        default:
+        {
+            Model model(argv[m]);
+            AOShader shader(model);
+            for (int i = 0; i < model.nfaces(); i++) {
+                vec4 clip_vert[3];
+                for (int j = 0; j < 3; j++)
+                    clip_vert[j] = shader.vertex(i, j);
+                triangle(clip_vert, shader, framebuffer, zbuffer);
+            }
+
+            for(int x = 0; x < width; ++x) {
+                for (int y = 0; y < height; ++y) {
+                    if(zbuffer[x + y * width] < -1e5)
+                        continue;
+                    float total = 0;
+                    for(float a = 0; a < M_PI * 2-1e-4 ; a += M_PI_4)
+                        total += M_PI_2 - AOShader::max_elevation_angle(zbuffer, 
+                            vec2(x, y), vec2(cos(a), sin(a)));
+                    total /= (M_PI * 4);
+                    total = pow(total, 100.f);
+                    framebuffer.set(x, y, TGAColor(total * 255, total * 255, total * 255));
+                }
+            }
+            break;
+        }
         }
         // the vertical flip is moved inside the function
         std::string result_name = argv[m];
         size_t lastindex = result_name.find_last_of(".");
         result_name = result_name.substr(0, lastindex) + "_framebuffer.tga";
         framebuffer.write_tga_file(result_name.c_str());
-        std::cout << "Output to " << result_name << std::endl;
+        std::cout << "Output to: " << result_name << std::endl;
     }
     return 0;
 }

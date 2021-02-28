@@ -1,6 +1,7 @@
 #include <iostream>
 #include <fstream>
 #include <cstring>
+#include <cmath>
 #include "tgaimage.h"
 
 TGAImage::TGAImage() : data(), width(0), height(0), bytespp(0) {}
@@ -299,3 +300,53 @@ void TGAImage::scale(int w, int h) {
     height = h;
 }
 
+float* gaussian_kernel(const int radius) {
+    int size = (radius * 2) + 1;
+    float norm = 1.f / (std::sqrt(2.f * M_PI) * radius);
+    float* kernel = new float[size];
+    float coeff = -1.f / (2.f * radius * radius);
+
+    float sum = 0.f;
+    for (int i = 0; i < size; i++) {
+        kernel[i] = norm * exp(pow(i - radius, 2) * coeff);
+        sum += kernel[i];
+    }
+    for (int i = size ; i--; kernel[i] /= sum)
+        ;
+    return kernel;
+}
+
+void TGAImage::gaussian_blur(const int radius) {
+    float * kernel = gaussian_kernel(radius);
+    TGAImage temp(*this);
+    int size = radius * 2 + 1;
+    for (int j = size; j < get_height(); ++j) {
+        for (int i = 0; i < get_width(); ++i) {
+            float BGRA[4] = {0, 0, 0, 0};
+            for (int k = 0; k < size; ++k) {
+                TGAColor c = get(i, j-size+k);
+                for(int d = 0; d < bytespp; d++)
+                    BGRA[d] += float(c[d]) * kernel[k];
+            }
+            unsigned char cBGRA[4];
+            for (int i = 4; i--; cBGRA[i] = (unsigned char)BGRA[i])
+                ;
+            temp.set(i, j, TGAColor(cBGRA, bytespp));
+        }
+    }
+    for(int j = 0; j < get_height(); ++j) {
+        for (int i = size; i < get_width(); ++i) {
+            float BGRA[4] = {0, 0, 0, 0};
+            for (int k = 0; k < size; ++k) {
+                TGAColor c = temp.get(i - size + k, j);
+                for(int d = 0; d < bytespp; d++)
+                    BGRA[d] += float(c[d]) * kernel[k];
+            }
+            unsigned char cBGRA[4];
+            for (int i = 4; i--; cBGRA[i] = (unsigned char)BGRA[i])
+                ;
+            set(i, j, TGAColor(cBGRA, bytespp));
+        }
+    }
+    delete[] kernel;
+}
