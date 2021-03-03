@@ -188,9 +188,10 @@ struct ShadowShader : public IShader {
         sb_p = sb_p / sb_p[3];
         // index in the shadowbuffer array
         int idx = int(sb_p[0]) + int(sb_p[1]) * width;
-        float shadow =
-            0.3f + 0.7f * (shadowbuffer[idx] <
-                           sb_p[2] + 43.34); // magic coeff to avoid z-fighting
+        float shadow = .3 + .7 * (shadowbuffer[idx] < sb_p[2]);
+        // magic coeff to avoid z-fighting
+        // float shadow =
+        //     0.3f + 0.7f * (shadowbuffer[idx] < sb_p[2] + 43.34);
 
         // interpolate uv for the current pixel
         vec2 uv = varying_uv * bar;
@@ -201,7 +202,7 @@ struct ShadowShader : public IShader {
         float diff = std::max(0.0, normal * lit);
         TGAColor c = model.diffuse(uv);
         for (int i = 0; i < 3; ++i)
-            color = std::min<float>(20 + c[i] * shadow * (1.2 * diff + 0.6 * spec), 255);
+            color[i] = std::min<float>(20 + c[i] * shadow * (1.2 * diff + 0.6 * spec), 255);
         return false;
     }
 };
@@ -322,7 +323,7 @@ int main(int argc, char** argv)
                 width * height, -std::numeric_limits<double>::max());
             lookat(light_dir, center, up);
             viewport(width / 8, height / 8, width * 3 / 4, height * 3 / 4);
-            projection(-1.f / (light_dir - center).norm());
+            projection(0);
             mat<4, 4> shadowMatrix = Viewport * Projection * ModelView;
 
             DepthShader depth_shader(model);

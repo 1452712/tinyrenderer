@@ -1,2 +1,4 @@
 build/
-framebuffer.tga
+.DS_Store
+*framebuffer.tga
+*depth.tga
